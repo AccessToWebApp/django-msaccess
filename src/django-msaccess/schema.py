@@ -6,6 +6,9 @@ from .debug import _DebugOutput
 
 import copy
 from decimal import Decimal
+import binascii
+import datetime
+
 
 from django.apps.registry import Apps
 from django.db import NotSupportedError
@@ -14,6 +17,7 @@ from django.db.backends.ddl_references import Statement
 from django.db.backends.utils import strip_quotes
 from django.db.models import UniqueConstraint
 from django.db.transaction import atomic
+from django.utils.encoding import force_str
 
 
 import random, string
@@ -92,8 +96,69 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
         # super().__exit__(exc_type, exc_value, traceback)
         # self.connection.enable_constraint_checking()
 
+
+# ------------------------------------------------------------------------------
+#  The following function 'quote_value' is incorporated from [mssql-django].
+#  Original Author: Microsoft Corporation.
+#  License: BSD 3-Clause License
+#
+#  Copyright (c) 2021 Microsoft Corporation All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# * Redistributions of source code must retain the above copyright notice, this
+#  list of conditions and the following disclaimer.
+#
+# * Redistributions in binary form must reproduce the above copyright notice,
+#   this list of conditions and the following disclaimer in the documentation
+#  and/or other materials provided with the distribution.
+#
+# * Neither the name of the copyright holder nor the names of its
+#  contributors may be used to endorse or promote products derived from
+#  this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# ------------------------------------------------------------------------------
     def quote_value(self, value):
-        raise ValueError('*** ToDo ***')
+        #raise ValueError('*** ToDo ***')
+        #
+        #[UPDATE(Added):Jan 16, 2026] Refer to mssql-django's program.
+        #
+        # --- Here is a quote from mssql-django's code:  ---
+        # Copyright (c) Microsoft Corporation.
+        # Licensed under the BSD license.
+        #
+        """
+        Returns a quoted version of the value so it's safe to use in an SQL
+        string. This is not safe against injection from user code; it is
+        intended only for use in making SQL scripts or preparing default values
+        for particularly tricky backends (defaults are not user-defined, though,
+        so this is safe).
+        """
+        if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+            return "'%s'" % value
+        elif isinstance(value, str):
+            return "'%s'" % value.replace("'", "''")
+        elif isinstance(value, (bytes, bytearray, memoryview)):
+            return "0x%s" % force_str(binascii.hexlify(value))
+        elif isinstance(value, bool):
+          #*return "1" if value else "0"
+            return "-1" if value else "0"  #MS-Access: True(-1)
+        else:
+            return str(value)
+        #---- The quote ends here -----
+    
 
         # The backend "mostly works" without this function and there are use
         # cases for compiling Python without the sqlite3 libraries (e.g.

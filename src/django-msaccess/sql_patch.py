@@ -6,6 +6,10 @@
 #        
 #/////////////////////////////////////////////////////////////////////////
 #
+import sys
+pkg = sys.modules[__package__]
+
+from datetime import datetime, date
 import re
 
 #Symbol that represents the start of a name
@@ -65,6 +69,161 @@ def SELECT_PATCH_0010(input_sql):
     
     return True, reconstructed, p
 
+#
+#//////////////////////////////
+#      Name Truncation
+#//////////////////////////////
+#
+TruncateName_SQLStmt = [
+ {'SMP': 'ALTER TABLE  [TableName]   ADD CONSTRAINT [ConstraintName]          FOREIGN KEY ([ColumnList],[ ]) REFERENCES [TableName] ([ColumnList]);',
+  'fmt':r'ALTER TABLE \[([^\[\]]+)\] ADD CONSTRAINT \[([^\[\]]{64})[^\[\]]*\] FOREIGN KEY ([\s\S]+)$',
+  'sql':r'ALTER TABLE [\1] ADD CONSTRAINT [\2] FOREIGN KEY \3'},
+
+ {'SMP': 'CREATE INDEX [ConstraintName] ON [TableName] ([ColumnList]);',
+  'fmt':r'CREATE INDEX \[([^\[\]]{64})[^\[\]]*\] ON ([\s\S]+)$',
+  'sql':r'CREATE INDEX [\1] ON \2'},
+
+ {'SMP': 'CREATE UNIQUE INDEX [ConstraintName] ON [TableName] ([ColumnList]);',
+  'fmt':r'CREATE UNIQUE INDEX \[([^\[\]]{64})[^\[\]]*\] ON ([\s\S]+)$',
+  'sql':r'CREATE UNIQUE INDEX [\1] ON \2'},
+
+]
+
+TruncateName_SQLStmt_cpl = [
+  re.compile(item['fmt']) for item in TruncateName_SQLStmt
+]
+
+
+def TRUNCATE_NAME_PATCH(sql):
+    idx = 0
+    for item in TruncateName_SQLStmt_cpl:
+        if item.match(sql):
+            trunc_sql =item.sub(TruncateName_SQLStmt[idx]['sql'], sql)
+            return True, trunc_sql
+        else:
+            idx = idx + 1
+            continue
+    return False, ''
+
+
+#
+#/////////////////////////////////////////////////////////////////////////////////
+#             Creating a table fails when a column has a default value.
+# When you register a default value for a column, the following SQL statement is generated:  
+#   CREATE TABLE [tableName] ([id] COUNTER NOT NULL PRIMARY KEY,
+#                             [columnName] varchar(30)  DEFAULT ? NOT NULL)
+#   params=('ABC',)
+#
+# This is the format of a parameterized SQL statement.
+# Microsoft Access SQL statements do not recognize parameter queries in table creation SQL.
+#
+# NOTE:
+#   https://learn.microsoft.com/en-us/office/vba/access/concepts/structured-query-language/modify-a-table-s-design-using-access-sql
+#
+# The DEFAULT statement can be executed only through the Access OLE DB provider and ADO.
+# It will return an error message if used through the Access SQL View user interface.
+#
+#
+#/////////////////////////////////////////////////////////////////////////////////
+#
+def patch_create_table(sql, params):
+    if params is None:
+        return sql
+    if len(sql) < 13:
+        return sql
+    st = sql[:13].upper()
+    if st != 'CREATE TABLE ':
+        return sql
+
+    patched_sql = sql
+
+    for param in params:
+        # replace
+        ret = patched_sql.replace('DEFAULT ?', '', 1)
+        if ret != patched_sql:
+            patched_sql = ret
+        else:
+            raise ValueError('*** ToDo ***')
+
+    return  patched_sql
+
+    #
+    # This is the process of embedding parameters into a string.
+    # Unfortunately, this doesn't work on ODBC systems.
+    #
+    for param in params:
+        if param is None:
+            val = "NULL"
+        
+        elif isinstance(param, bool):
+            # Access: True=-1, False=0
+            val = "-1" if param else "0"
+        
+        elif isinstance(param, (int, float)):
+            val = str(param)
+        
+        elif isinstance(param, (datetime, date)):
+            # Access: #YYYY-MM-DD HH:MM:SS#
+            val = f"#{param.strftime('%Y-%m-%d %H:%M:%S')}#"
+        
+        else:
+            # Strings
+            p_str = str(param)
+            
+            # LIKE operator 
+            # SQL: '%' -> Access: '*'
+            # SQL: '_' -> Access: '?'
+            p_str = p_str.replace('%', '*').replace('_', '?')
+            
+            # Escaping single quotes
+            safe_val = p_str.replace("'", "''")
+            #val = f"'{safe_val}'"
+            val = f"{safe_val}"
+
+        
+        # replace
+        ret = patched_sql.replace("? NOT NULL", val, 1)
+        if ret != patched_sql:
+            patched_sql = ret
+        else:
+            patched_sql = patched_sql.replace("?", val, 1)
+
+    return patched_sql
+
+
+
+#
+#/////////////////////////////////////////////////////////////
+#
+#     Excel Select Patch
+#
+#/////////////////////////////////////////////////////////////
+#
+
+clng_cpl = re.compile(r'CLNG\((\w+)\)')
+
+def excel_select_patch(sql):
+    if not pkg.__excel_odbc_driver__:
+        return sql
+
+
+    new_sql = sql
+    sql_len = len(sql) 
+
+
+
+    #(before)SELECT MAX(CLNG(id)) FROM [Sheet1$]
+    #( after)SELECT MAX(CLNG(IIF(ISNULL(id),0,id))) FROM [Sheet1$] 
+    if sql_len > 26:
+        st = sql[:26].upper()
+        if st == 'SELECT MAX(CLNG(ID)) FROM ':
+            new_sql = clng_cpl.sub(r'CLNG(IIF(ISNULL(\1),0,\1))', sql)
+            return new_sql
+        
+
+    return new_sql
+
+
 
 #//////////////////////////////
 if __name__ == '__main__':
@@ -91,5 +250,15 @@ if __name__ == '__main__':
                 if val: print(f"  {key}: {val}")
             print("-"*30,"\n")
 
-
+    sql_test = [
+        'ALTER TABLE [TableName] ADD CONSTRAINT [C123456789012345678901234567890123456789012345678901234567890123456789] FOREIGN KEY ([Col1], [Col2], [Col3]) REFERENCES [TableName] ([Col1], [Col2], [Col3]);',
+        'CREATE INDEX [C123456789012345678901234567890123456789012345678901234567890123456789] ON [tableName] ([ColumnList);',
+        'CREATE UNIQUE INDEX [C123456789012345678901234567890123456789012345678901234567890123456789] ON [tableName] ([Col1], [Col2], [Col3]);',
+        'End'
+    ]
+    for sql in  sql_test:
+        flag, trunc_sql= TRUNCATE_NAME_PATCH(sql)
+        print(f"flag={flag}")
+        print(f"sql ={sql}")
+        print(f"tsql={trunc_sql}\n")
 

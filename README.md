@@ -133,6 +133,67 @@ Set Cat = Nothing
 Do not select Access as a production database.  
 Once you've finished learning django, it's time to switch to a full-fledged database.  
 
+
+# On a trial basis, we have enabled connection to Excel files.
+Support for reading and writing Excel files in standalone Django program format.  
+
+change your DATABASES settings:  
+
+```
+DATABASES = {  
+    'default': {  
+        'ENGINE': 'django-msaccess',  
+        'ODBC': '{Microsoft Excel Driver (*.xls, *.xlsx, *.xlsm, *.xlsb)}',  
+        'PATH': 'This is the xlsx file. Please enter the full path.',  
+        'DEBUG': False,  
+        'TRUNCATENAME': True,  
+    },
+}
+```
+
+The following Django standalone programs can use Excel files:  
+
+```
+import os
+import django
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'YourProject.settings')
+django.setup()
+#
+#--------  Your Script -------------
+#
+from MyApp.models import Person
+
+print(Person.objects.all().values_list())
+
+mem=Person()
+mem.id=1
+mem.first_name='Audrey'
+mem.last_name='Hepburn'
+mem.save()
+```
+
+In the Django app MyApp,
+the following is declared in the models.py file:
+
+```
+from django.db import models
+
+# Create your models here.
+class Person(models.Model):
+    class Meta:
+        db_table='Sheet1$'
+
+    first_name = models.CharField(max_length=30)
+    last_name = models.CharField(max_length=30)
+
+```
+
+You can learn how to operate a simple Django model using an Excel file.
+You must enter the column names in the first row of the Excel file. If you omit the primary key, you must also enter the ID column name.
+This is still experimental, so if you encounter any errors, I apologize.
+
+
+
 Thank you for your interest in this software.  
 
 
@@ -140,6 +201,11 @@ Thank you for your interest in this software.
 This project is licensed under the MIT License, see the LICENSE file for details.
 
 
+# Credits
+This project incorporates software or code snippets from the following sources:
 
-
+* **[Function DatabaseSchemaEditor.quote_value]** - Derived from mssql-django/Microsoft Corporation.
+  * Licensed under the **BSD License**.
+  * Source: https://github.com/microsoft/mssql-django
+  * We would like to thank mssql-django for their valuable contribution to the open-source community.
 

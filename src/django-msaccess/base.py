@@ -7,7 +7,6 @@ Microsoft Access database backend for Django.
 import sys
 pkg = sys.modules[__package__]
 
-
 from datetime import datetime
 
 try:
@@ -65,17 +64,26 @@ IGNORE_SQLStmt = [
 IGNORE_SQLStmt_cpl = [re.compile(sql) for sql in IGNORE_SQLStmt]
 
 
-TruncateName_SQLStmt = [
- {'fmt':r'ALTER TABLE \[([^\[\]]+)\] ADD CONSTRAINT \[([^\[\]]{64})[^\[\]]*\] FOREIGN KEY ([\s\S]+)$',
-  'sql':r'ALTER TABLE [\1] ADD CONSTRAINT [\2] FOREIGN KEY \3'},
-]
+# TruncateName_SQLStmt = [
+#  {'SMP': 'ALTER TABLE  [TableName]   ADD CONSTRAINT [ConstraintName]          FOREIGN KEY ([ColumnList],[ ]) REFERENCES [TableName] ([ColumnList]);',
+#   'fmt':r'ALTER TABLE \[([^\[\]]+)\] ADD CONSTRAINT \[([^\[\]]{64})[^\[\]]*\] FOREIGN KEY ([\s\S]+)$',
+#   'sql':r'ALTER TABLE [\1] ADD CONSTRAINT [\2] FOREIGN KEY \3'},
 
-TruncateName_SQLStmt_cpl = [
-  re.compile(item['fmt']) for item in TruncateName_SQLStmt
-]
+#  {'SMP': 'CREATE INDEX [ConstraintName] ON [TableName] ([ColumnList]);',
+#   'fmt':r'CREATE INDEX \[([^\[\]]{64})[^\[\]]*\] ON ([\s\S]+)$',
+#   'sql':r'CREATE INDEX [\1] ON \2'},
+
+#  {'SMP': 'CREATE UNIQUE INDEX [ConstraintName] ON [TableName] ([ColumnList]);',
+#   'fmt':r'CREATE UNIQUE INDEX \[([^\[\]]{64})[^\[\]]*\] ON ([\s\S]+)$',
+#   'sql':r'CREATE UNIQUE INDEX [\1] ON \2'},
+# ]
+
+# TruncateName_SQLStmt_cpl = [
+#   re.compile(item['fmt']) for item in TruncateName_SQLStmt
+# ]
 
 
-from .sql_patch import SELECT_PATCH_0010
+from .sql_patch import SELECT_PATCH_0010, TRUNCATE_NAME_PATCH, patch_create_table, excel_select_patch
 
 # SELECT_PATCH_SQLStmt = [
 # [
@@ -495,6 +503,12 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         _DebugOutput(fnm,f"sd={sd}")
 
         cd['DRIVER']=sd['ODBC']+';DBQ='+sd['PATH']
+
+        #[UPDATE(Added):Jan 18, 2026]Excel Driver
+        if sd['ODBC'][:23].lower() == '{microsoft excel driver':
+            cd['DRIVER']=cd['DRIVER']+';ReadOnly=0;'
+            pkg.__excel_odbc_driver__ = True
+
         if ('UID' in sd_keys) and (sd['UID'] is not None):
             cd['UID']=sd['UID']
         if ('PWD' in sd_keys) and (sd['PWD'] is not None):
@@ -558,8 +572,13 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         kwargs = self._get_new_connection_kwargs()
         #print(f"[_open_new_connection]conn={connstr}")
         _DebugOutput(fnm,f"conn={connstr}")
+        _DebugOutput(fnm,f"kwargs={kwargs}")
 
-        conn = Database.connect(connstr, **kwargs)
+        #[UPDATE(Added):Jan 18, 2026]Excel Driver
+        if pkg.__excel_odbc_driver__:
+            conn = Database.connect(connstr, autocommit=True)
+        else:
+            conn = Database.connect(connstr, **kwargs)
         #print(f"[_open_new_connection]conn={conn}")
         _DebugOutput(fnm,f"conn={conn}")
 
@@ -609,6 +628,35 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         _DebugOutput(fnm,f"cursor={cursor}")
         _DebugOutput(fnm,f"driver_needs_utf8={self.driver_needs_utf8}")
         return CursorWrapper(cursor, self.driver_needs_utf8)
+
+    #[UPDATE(Added):Jan 14, 2026]get_connection_params
+    def get_connection_params(self):
+        """Return a dict of parameters suitable for get_new_connection."""
+        return dict() #nothing
+
+
+    #[UPDATE(Added):Jan 14, 2026]get_new_connection
+    def get_new_connection(self, conn_params):
+        """Open a connection to the database."""
+        return self._open_new_connection()
+
+
+    #[UPDATE(Added):Jan 14, 2026]_set_autocommit
+    def _set_autocommit(self, autocommit):
+        fnm='[DatabaseWrapper._set_autocommit(base.py:MS-Access)]'
+        """
+        Backend-specific implementation to enable or disable autocommit.
+        """
+        _DebugOutput(fnm,f"ignore _set_autocommit:flag={autocommit}")
+        return
+    
+
+
+
+
+
+
+
 
 class CursorWrapper(object):
     """
@@ -761,6 +809,10 @@ class CursorWrapper(object):
                     _DebugOutput(fnm,f'[ Patched SQL] {rebuilt}')
                     sql = rebuilt
 
+        #[UPDATE(Added):Jan 18, 2026]Excel Driver
+        if pkg.__excel_odbc_driver__:
+            sql = excel_select_patch(sql)
+
 
         #print(f"[CursorWrapper.execute]need_commit={need_commit}")
         _DebugOutput(fnm,f"need_commit={need_commit}")
@@ -812,6 +864,39 @@ class CursorWrapper(object):
                         except Database.Error as e:
                             print(f"\n\n*** [ODBC ERROR(1)] ***\n[CursorWrapper.execute(base.py)]\nsql={sql}\nparams={params}\n{e}\n\n")
                     return ret
+                
+
+
+
+        if len(sql) > 12:
+            str = sql[:13].upper()
+            if str == 'CREATE TABLE ':
+                if params is not None:
+                    new_sql = patch_create_table(sql, params)
+                    _DebugOutput(fnm,'\n\n')
+                    _DebugOutput(fnm,'********************************')
+                    _DebugOutput(fnm,'      [PATCH]  CREATE TABLE     ')
+                    _DebugOutput(fnm,'[CursorWrapper.execute(base.py)]')
+                    _DebugOutput(fnm,'********************************')
+                    _DebugOutput(fnm,'The CREATE TABLE statement has been modified to be executable in Microsoft Access.')
+                    _DebugOutput(fnm,'This is the format of a parameterized SQL statement.')
+                    _DebugOutput(fnm,'Microsoft Access SQL statements do not recognize parameter queries in table creation SQL.')
+                    _DebugOutput(fnm,'To address this issue, we embedded the default value of the parameter into the SQL statement, eliminating the parameter.')
+                    _DebugOutput(fnm,f'[Original SQL] {sql}')
+                    _DebugOutput(fnm,f'[ Patched SQL] {new_sql}')
+                    _DebugOutput(fnm,f'[Original PARAM] {params}')
+
+                    try:
+                        _DebugOutput(fnm,f"[EXECUTE_SQL]sql={new_sql}")
+                        ret = self.cursor.execute(new_sql)
+                        self.connection.commit()
+
+                    except Database.Error as e:
+                        print(f"\n\n*** [ODBC ERROR(1)] ***\n[CursorWrapper.execute(base.py)]\nsql={new_sql}\n{e}\n\n")
+                        raise ValueError('*** ToDo ***')
+                    return ret
+
+
 
         #
         # convert from 'CASE WHEN'.
@@ -832,14 +917,16 @@ class CursorWrapper(object):
         truncate_flag = False
         idx = 0
         if pkg.__truncate_name__:
-            for item in TruncateName_SQLStmt_cpl:
-                if item.match(sql):
-                    trunc_sql =item.sub(TruncateName_SQLStmt[idx]['sql'], sql)
-                    truncate_flag = True
-                    break
-                else:
-                    idx = idx + 1
-                    continue
+            truncate_flag, trunc_sql = TRUNCATE_NAME_PATCH(sql)
+            # for item in TruncateName_SQLStmt_cpl:
+            #     if item.match(sql):
+            #         trunc_sql =item.sub(TruncateName_SQLStmt[idx]['sql'], sql)
+            #         truncate_flag = True
+            #         break
+            #     else:
+            #         idx = idx + 1
+            #         continue
+                
             if truncate_flag:
                 _DebugOutput("\n\n----- truncate name -----")
                 _DebugOutput(fnm,"Microsoft Access constraint name length is maximum 64 characters.")
@@ -990,3 +1077,7 @@ class CursorWrapper(object):
             _DebugOutput(fnm,"The cursor has already been closed.")
             _DebugOutput(fnm,f"e={e}")
             return
+
+
+
+
